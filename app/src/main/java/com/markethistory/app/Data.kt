@@ -148,6 +148,14 @@ class Db(private val ctx: Context) : SQLiteOpenHelper(ctx, "market_history.db", 
         writableDatabase.delete("media", "id=?", arrayOf(id.toString()))
     }
 
+    fun replaceMedia(id: Long, newFile: String) {
+        val old = query("SELECT file FROM media WHERE id=?", arrayOf(id.toString())) { it.getString(0) }.firstOrNull()
+        val cv = ContentValues()
+        cv.put("file", newFile)
+        writableDatabase.update("media", cv, "id=?", arrayOf(id.toString()))
+        if (old != null && old != newFile) mediaFile(old).delete()
+    }
+
     fun importMedia(uri: Uri, type: String): String? {
         val ext = when (type) {
             "image" -> "jpg"

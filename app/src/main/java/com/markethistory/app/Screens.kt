@@ -29,7 +29,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -57,6 +60,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -95,13 +99,7 @@ sealed class Screen {
     object Backup : Screen()
 }
 
-data class MItem(val id: Long?, val type: String, val file: String)
-
-class Rec {
-    var recorder: MediaRecorder? = null
-    var file: String? = null
-    var start: Long = 0L
-}
+data class MItem(val id: Long?, val type: String, val file: String, val oldFile: String?)
 
 @Composable
 fun MarketApp(app: AppState) {
@@ -436,6 +434,21 @@ fun ViewScreen(app: AppState, expId: Long, onBack: () -> Unit, onEdit: (Long) ->
     val media = remember(app.version, expId) { db.media(expId) }
     var confirmDelete by remember { mutableStateOf(false) }
     var zoom by remember { mutableStateOf<String?>(null) }
+    var replacing by remember { mutableStateOf<MediaItem?>(null) }
+    var srcFor by remember { mutableStateOf<MediaItem?>(null) }
+    var showRecord by remember { mutableStateOf(false) }
+    var delItem by remember { mutableStateOf<MediaItem?>(null) }
+
+    val picker = rememberMediaPicker(db) { _, file ->
+        val t = replacing
+        replacing = null
+        if (t != null) {
+            db.replaceMedia(t.id, file)
+            app.bump()
+        } else {
+            db.mediaFile(file).delete()
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopBar("تجربه", onBack) {
@@ -490,27 +503,88 @@ fun ViewScreen(app: AppState, expId: Long, onBack: () -> Unit, onEdit: (Long) ->
                 }
                 if (media.isNotEmpty()) SectionLabel("فایل‌ها")
                 for (m in media) {
-                    val path = db.mediaFile(m.file).absolutePath
-                    Box(modifier = Modifier.padding(bottom = 10.dp)) {
-                        when (m.type) {
-                            "image" -> FileImage(
-                                path,
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { zoom = path }
-                            )
-                            "video" -> VideoPlayer(path)
-                            else -> AudioPlayer(path)
+                    key(m.id, m.file) {
+                        val path = db.mediaFile(m.file).absolutePath
+                        Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                            when (m.type) {
+                                "image" -> FileImage(
+                                    path,
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { zoom = path }
+                                )
+                                "video" -> VideoPlayer(path)
+                                else -> AudioPlayer(path)
+                            }
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                TextButton(onClick = {
+                                    replacing = m
+                                    srcFor = m
+                                }) {
+                                    Icon(Icons.Filled.SwapHoriz, contentDescription = null, tint = GreenColor)
+                                    Text("  جایگزین", style = MaterialTheme.typography.labelLarge, color = GreenColor)
+                                }
+                                TextButton(onClick = { delItem = m }) {
+                                    Icon(Icons.Filled.Delete, contentDescription = null, tint = RedColor)
+                                    Text("  حذف", style = MaterialTheme.typography.labelLarge, color = RedColor)
+                                }
+                            }
                         }
                     }
                 }
+                SpacerH(24)
             }
         }
     }
 
     val z = zoom
     if (z != null) ZoomableImageDialog(z) { zoom = null }
+    val s = srcFor
+    if (s != null) {
+        SourceDialog(
+            "جایگزین کردن با",
+            sourceOptions(s.type, picker) { showRecord = true },
+            onClose = { srcFor = null },
+            onCancel = {
+                srcFor = null
+                replacing = null
+            }
+        )
+    }
+    if (showRecord) {
+        RecordDialog(
+            db,
+            onSaved = { file ->
+                showRecord = false
+                val t = replacing
+                replacing = null
+                if (t != null) {
+                    db.replaceMedia(t.id, file)
+                    app.bump()
+                } else {
+                    db.mediaFile(file).delete()
+                }
+            },
+            onDismiss = {
+                showRecord = false
+                replacing = null
+            }
+        )
+    }
+    val di = delItem
+    if (di != null) {
+        ConfirmDialog(
+            "این فایل حذف شود؟",
+            "حذف",
+            onConfirm = {
+                db.deleteMedia(di.id)
+                app.bump()
+                delItem = null
+            },
+            onDismiss = { delItem = null }
+        )
+    }
     if (confirmDelete) {
         ConfirmDialog(
             "این تجربه با همه فایل‌هایش حذف شود؟",
@@ -528,15 +602,10 @@ fun ViewScreen(app: AppState, expId: Long, onBack: () -> Unit, onEdit: (Long) ->
 
 // ---------------------------------------------------------------- editor
 
-@Suppress("DEPRECATION")
-private fun newRecorder(ctx: android.content.Context): MediaRecorder =
-    if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx) else MediaRecorder()
-
 @Composable
 fun EditorScreen(app: AppState, folderId: Long, expId: Long?, onDone: () -> Unit) {
     val db = app.db
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val existing = remember { if (expId != null) db.exp(expId) else null }
 
     var title by remember { mutableStateOf(existing?.title ?: "") }
@@ -545,68 +614,56 @@ fun EditorScreen(app: AppState, folderId: Long, expId: Long?, onDone: () -> Unit
     var date by remember { mutableStateOf(if (existing != null) parseDate(existing.date) else LocalDate.now()) }
     val media = remember {
         mutableStateListOf<MItem>().also { list ->
-            if (expId != null) db.media(expId).forEach { list.add(MItem(it.id, it.type, it.file)) }
+            if (expId != null) db.media(expId).forEach { list.add(MItem(it.id, it.type, it.file, null)) }
         }
     }
     val removed = remember { mutableStateListOf<Long>() }
     var showDate by remember { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
-    var recording by remember { mutableStateOf(false) }
-    var elapsed by remember { mutableLongStateOf(0L) }
-    val rec = remember { Rec() }
+    var showCam by remember { mutableStateOf(false) }
+    var showRecord by remember { mutableStateOf(false) }
+    var replacing by remember { mutableStateOf<MItem?>(null) }
+    var srcFor by remember { mutableStateOf<MItem?>(null) }
+    var delItem by remember { mutableStateOf<MItem?>(null) }
 
     fun dirty(): Boolean {
         val t0 = existing?.title ?: ""
         val s0 = existing?.symbol ?: ""
         val b0 = existing?.body ?: ""
         return title != t0 || symbol != s0 || body != b0 ||
-            removed.isNotEmpty() || media.any { it.id == null } ||
+            removed.isNotEmpty() || media.any { it.id == null || it.oldFile != null } ||
             (existing != null && date != parseDate(existing.date))
     }
 
-    fun stopRec(keep: Boolean) {
-        val r = rec.recorder ?: return
-        try {
-            r.stop()
-        } catch (e: Exception) {
-            // too short: nothing recorded
+    // swap the file of an item; saved experiences keep the old file until Save
+    fun replaceItem(old: MItem, file: String) {
+        val idx = media.indexOf(old)
+        if (idx < 0) {
+            db.mediaFile(file).delete()
+            return
         }
-        r.release()
-        rec.recorder = null
-        recording = false
-        val name = rec.file
-        if (name != null) {
-            val f = db.mediaFile(name)
-            if (keep && f.exists() && f.length() > 0) media.add(MItem(null, "audio", name)) else f.delete()
+        val fresh = if (old.id == null) {
+            db.mediaFile(old.file).delete()
+            MItem(null, old.type, file, null)
+        } else if (old.oldFile == null) {
+            MItem(old.id, old.type, file, old.file)
+        } else {
+            db.mediaFile(old.file).delete()
+            MItem(old.id, old.type, file, old.oldFile)
         }
-        rec.file = null
+        media[idx] = fresh
     }
 
-    fun startRec() {
-        try {
-            val name = UUID.randomUUID().toString() + ".m4a"
-            val r = newRecorder(ctx)
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioEncodingBitRate(96000)
-            r.setAudioSamplingRate(44100)
-            r.setOutputFile(db.mediaFile(name).absolutePath)
-            r.prepare()
-            r.start()
-            rec.recorder = r
-            rec.file = name
-            rec.start = System.currentTimeMillis()
-            elapsed = 0L
-            recording = true
-        } catch (e: Exception) {
-            Toast.makeText(ctx, "شروع ضبط ممکن نشد", Toast.LENGTH_SHORT).show()
-        }
+    fun onNewMedia(type: String, file: String) {
+        val t = replacing
+        replacing = null
+        if (t == null) media.add(MItem(null, type, file, null)) else replaceItem(t, file)
     }
+
+    val picker = rememberMediaPicker(db) { type, file -> onNewMedia(type, file) }
 
     fun cancel() {
-        if (recording) stopRec(false)
-        media.filter { it.id == null }.forEach { db.mediaFile(it.file).delete() }
+        media.filter { it.id == null || it.oldFile != null }.forEach { db.mediaFile(it.file).delete() }
         onDone()
     }
 
@@ -615,61 +672,27 @@ fun EditorScreen(app: AppState, folderId: Long, expId: Long?, onDone: () -> Unit
             Toast.makeText(ctx, "عنوان تجربه را بنویس", Toast.LENGTH_SHORT).show()
             return
         }
-        if (recording) stopRec(true)
         val id = db.saveExp(expId, folderId, title.trim(), date.toString(), symbol.trim(), body.trim())
         removed.forEach { db.deleteMedia(it) }
-        media.filter { it.id == null }.forEach { db.addMedia(id, it.type, it.file) }
+        for (m in media) {
+            val mid = m.id
+            if (mid == null) {
+                db.addMedia(id, m.type, m.file)
+            } else if (m.oldFile != null) {
+                db.replaceMedia(mid, m.file)
+            }
+        }
         app.bump()
         onDone()
     }
 
     BackHandler(enabled = true) {
-        if (dirty() || recording) confirmDiscard = true else cancel()
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            try {
-                rec.recorder?.stop()
-            } catch (e: Exception) {
-            }
-            rec.recorder?.release()
-            rec.recorder = null
-        }
-    }
-    LaunchedEffect(recording) {
-        while (recording) {
-            elapsed = System.currentTimeMillis() - rec.start
-            delay(300)
-        }
-    }
-
-
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch {
-            val f = withContext(Dispatchers.IO) { db.importMedia(uri, "image") }
-            if (f != null) media.add(MItem(null, "image", f))
-        }
-    }
-    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch {
-            val f = withContext(Dispatchers.IO) { db.importMedia(uri, "video") }
-            if (f != null) media.add(MItem(null, "video", f))
-        }
-    }
-    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch {
-            val f = withContext(Dispatchers.IO) { db.importMedia(uri, "audio") }
-            if (f != null) media.add(MItem(null, "audio", f))
-        }
-    }
-    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) startRec() else Toast.makeText(ctx, "برای ضبط ویس اجازه میکروفون لازمه", Toast.LENGTH_SHORT).show()
+        if (dirty()) confirmDiscard = true else cancel()
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopBar(if (expId == null) "ثبت تجربه" else "ویرایش تجربه", onBack = {
-            if (dirty() || recording) confirmDiscard = true else cancel()
+            if (dirty()) confirmDiscard = true else cancel()
         }) {
             IconButton(onClick = { save() }) {
                 Icon(Icons.Filled.Check, contentDescription = "ذخیره", tint = GreenColor)
@@ -724,91 +747,99 @@ fun EditorScreen(app: AppState, folderId: Long, expId: Long?, onDone: () -> Unit
 
             SectionLabel("فایل‌ها")
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { imagePicker.launch("image/*") }, modifier = Modifier.weight(1f)) {
+                Button(
+                    onClick = {
+                        replacing = null
+                        showCam = true
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.CameraAlt, contentDescription = null)
+                    Text("  دوربین", style = MaterialTheme.typography.labelLarge)
+                }
+                OutlinedButton(
+                    onClick = {
+                        replacing = null
+                        showRecord = true
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Mic, contentDescription = null, tint = RedColor)
+                    Text("  ضبط ویس", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        replacing = null
+                        picker.gallery("image")
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(Icons.Filled.PhotoLibrary, contentDescription = null)
                     Text(" عکس", style = MaterialTheme.typography.labelLarge)
                 }
-                OutlinedButton(onClick = { videoPicker.launch("video/*") }, modifier = Modifier.weight(1f)) {
+                OutlinedButton(
+                    onClick = {
+                        replacing = null
+                        picker.gallery("video")
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(Icons.Filled.Videocam, contentDescription = null)
                     Text(" فیلم", style = MaterialTheme.typography.labelLarge)
                 }
-                OutlinedButton(onClick = { audioPicker.launch("audio/*") }, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Filled.Mic, contentDescription = null)
-                    Text(" ویس", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-            if (recording) {
-                val secs = (elapsed / 1000).toInt()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(RedColor.copy(alpha = 0.15f))
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .clip(CircleShape)
-                            .background(RedColor)
-                    )
-                    Text(
-                        "  در حال ضبط  " + "%02d:%02d".format(secs / 60, secs % 60).fa(),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = TextColor,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(onClick = { stopRec(true) }) {
-                        Icon(Icons.Filled.Stop, contentDescription = "توقف", tint = RedColor)
-                    }
-                }
-            } else {
                 OutlinedButton(
                     onClick = {
-                        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
-                            PackageManager.PERMISSION_GRANTED
-                        ) startRec() else permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        replacing = null
+                        picker.gallery("audio")
                     },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Filled.Mic, contentDescription = null, tint = RedColor)
-                    Text("  ضبط ویس جدید", style = MaterialTheme.typography.labelLarge)
+                    Icon(Icons.Filled.AudioFile, contentDescription = null)
+                    Text(" صوت", style = MaterialTheme.typography.labelLarge)
                 }
             }
 
             for (m in media.toList()) {
-                val path = db.mediaFile(m.file).absolutePath
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        when (m.type) {
-                            "image" -> FileImage(
-                                path,
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(160.dp)
-                                    .clip(RoundedCornerShape(12.dp)),
-                                ContentScale.Crop
-                            )
-                            "video" -> Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(CardColor)
-                                    .padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Filled.Videocam, contentDescription = null, tint = GreenColor)
-                                Text("  فیلم", style = MaterialTheme.typography.bodyLarge, color = TextColor)
+                key(m.file) {
+                    val path = db.mediaFile(m.file).absolutePath
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            when (m.type) {
+                                "image" -> FileImage(
+                                    path,
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(160.dp)
+                                        .clip(RoundedCornerShape(12.dp)),
+                                    ContentScale.Crop
+                                )
+                                "video" -> Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(CardColor)
+                                        .padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Filled.Videocam, contentDescription = null, tint = GreenColor)
+                                    Text("  فیلم", style = MaterialTheme.typography.bodyLarge, color = TextColor)
+                                }
+                                else -> AudioPlayer(path)
                             }
-                            else -> AudioPlayer(path)
                         }
-                    }
-                    IconButton(onClick = {
-                        if (m.id != null) removed.add(m.id) else db.mediaFile(m.file).delete()
-                        media.remove(m)
-                    }) {
-                        Icon(Icons.Filled.Delete, contentDescription = "حذف فایل", tint = RedColor)
+                        Column {
+                            IconButton(onClick = {
+                                replacing = m
+                                srcFor = m
+                            }) {
+                                Icon(Icons.Filled.SwapHoriz, contentDescription = "جایگزین", tint = GreenColor)
+                            }
+                            IconButton(onClick = { delItem = m }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "حذف فایل", tint = RedColor)
+                            }
+                        }
                     }
                 }
             }
@@ -821,6 +852,61 @@ fun EditorScreen(app: AppState, folderId: Long, expId: Long?, onDone: () -> Unit
             date = it
             showDate = false
         }
+    }
+    if (showCam) {
+        SourceDialog(
+            "دوربین",
+            listOf<Pair<String, () -> Unit>>(
+                "گرفتن عکس" to { picker.camera("image") },
+                "فیلم‌برداری" to { picker.camera("video") }
+            ),
+            onClose = { showCam = false },
+            onCancel = { showCam = false }
+        )
+    }
+    val s = srcFor
+    if (s != null) {
+        SourceDialog(
+            "جایگزین کردن با",
+            sourceOptions(s.type, picker) { showRecord = true },
+            onClose = { srcFor = null },
+            onCancel = {
+                srcFor = null
+                replacing = null
+            }
+        )
+    }
+    if (showRecord) {
+        RecordDialog(
+            db,
+            onSaved = { file ->
+                showRecord = false
+                onNewMedia("audio", file)
+            },
+            onDismiss = {
+                showRecord = false
+                replacing = null
+            }
+        )
+    }
+    val di = delItem
+    if (di != null) {
+        ConfirmDialog(
+            "این فایل حذف شود؟",
+            "حذف",
+            onConfirm = {
+                val mid = di.id
+                if (mid != null) {
+                    removed.add(mid)
+                    if (di.oldFile != null) db.mediaFile(di.file).delete()
+                } else {
+                    db.mediaFile(di.file).delete()
+                }
+                media.remove(di)
+                delItem = null
+            },
+            onDismiss = { delItem = null }
+        )
     }
     if (confirmDiscard) {
         ConfirmDialog(

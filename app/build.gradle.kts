@@ -11,8 +11,8 @@ android {
         applicationId = "com.markethistory.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     // fixed signing key: later versions install over the old one and keep your data
